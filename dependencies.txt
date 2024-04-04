@@ -1,0 +1,5 @@
+sudo apt update
+sudo apt install -y cmake
+sudo apt install -y libibverbs-dev
+sudo apt install -y librdmacm-dev
+

@@ -35,9 +35,18 @@ int main(int argc, char *argv[]) {
 
     // Main loop
     while (true) {
-        // Send data to the server
+        
+        // Get input from user
         char message[MAXINPUTLEN];
         std::cin.getline(message, MAXINPUTLEN);
+
+        // Check for exit command
+        if (!strncmp(message, "exit", MAXINPUTLEN)) {
+            close(clientSocket);
+            exit(0);
+        }
+
+        // Send data to the server
         if (send(clientSocket, message, strlen(message), 0) == -1) {
             std::cerr << "Error sending data to server\n";
             close(clientSocket);

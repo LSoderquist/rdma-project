@@ -232,7 +232,7 @@ void handleClient(int clientSocket, BankingSystem bankingSystem) {
 
 
 int main(int argc, char *argv[]) {
-    const int numAccounts = 100;
+    const int numAccounts = stoi(argv[1]);
     const double initialBalance = 1000.0;
     BankingSystem bankingSystem(numAccounts, initialBalance);
 

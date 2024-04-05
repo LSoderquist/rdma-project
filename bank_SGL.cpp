@@ -76,7 +76,7 @@ public:
     }
 };
 
-void handleClient(int clientSocket, BankingSystem bankingSystem) {
+void handleClient(int clientSocket, BankingSystem& bankingSystem) {
     constexpr int BUFSIZE = 1024;
     char buf[BUFSIZE];
 
@@ -211,7 +211,7 @@ int main(int argc, char *argv[]) {
         }
 
         // Start a new thread to handle the client connection
-        std::thread t(handleClient, clientSocket, bankingSystem);
+        std::thread t(handleClient, clientSocket, std::ref(bankingSystem));
         t.detach();
     }
 

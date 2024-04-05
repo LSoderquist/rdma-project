@@ -6,6 +6,9 @@
 #include <atomic>
 #include <cassert>
 #include <cstring>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <unistd.h>
 
 using namespace std;
 struct timespec startTime, endTime;
@@ -65,7 +68,7 @@ public:
 
 class TL2Transaction {
 public:
-    TL2Transaction(Account* from, Account* to) : from(from), to(to), startTime(), endTime() {}
+    TL2Transaction(Account* from, Account* to, double amount) : from(from), to(to), startTime(), endTime(), transferAmount(amount) {}
 
     void beginTransaction() {
         startTime = std::chrono::high_resolution_clock::now();
@@ -108,7 +111,7 @@ private:
     std::chrono::high_resolution_clock::time_point endTime;
     int readSetFromVersion;
     int readSetToVersion;
-    static constexpr double transferAmount = 50.0;
+    double transferAmount;
 };
 
 class BankingSystem {
@@ -124,7 +127,7 @@ public:
     }
 
     bool transfer(int from, int to, double amount) {
-        TL2Transaction transaction(accounts[from], accounts[to]);
+        TL2Transaction transaction(accounts[from], accounts[to], amount);
         transaction.beginTransaction();
         transaction.endTransaction();
         return true;
@@ -133,6 +136,7 @@ public:
     double getBalance(int accountID) const {
         //std::lock_guard<std::mutex> lock(accounts[accountID]->accountLock);
         double balance= accounts[accountID]->getBalance();
+        return balance;
     }
 
     const vector<Account*>& getAccounts() const {
@@ -144,162 +148,87 @@ public:
     }
 };
 
-void testBankingSystem(BankingSystem& bankingSystem, int numThreads, int transactionsPerThread, ostream& output) {
-    vector<thread> threads;
-    clock_gettime(CLOCK_MONOTONIC,&startTime);
-    for (int i = 0; i < numThreads; ++i) {
-        threads.emplace_back([&bankingSystem, transactionsPerThread, i, &output]() {
-            try {
-                for (int j = 0; j < transactionsPerThread; ++j) {
-                    int from = rand() % bankingSystem.getNumAccounts();
-                    int to = rand() % bankingSystem.getNumAccounts();
-                    double amount = static_cast<double>(rand() % 100) / 10.0;
+void handleClient(int clientSocket, BankingSystem bankingSystem) {
+    constexpr int BUFSIZE = 1024;
+    char buf[BUFSIZE];
 
-                    bankingSystem.transfer(from, to, amount);
-                }
-                //output << "Thread " << i << " completed its transactions." << endl;
-            } catch (const exception& e) {
-                cerr << "Exception in thread " << i << ": " << e.what() << endl;
-            }
-        });
-    }
-
-    for (auto& thread : threads) {
-        thread.join();
-    }
-
-    clock_gettime(CLOCK_MONOTONIC,&endTime);
-}
-void highContentionTest(BankingSystem& bankingSystem, int accountId, double initialBalance) {
-    constexpr int NUM_THREADS = 10;
-    constexpr int TRANSACTIONS_PER_THREAD = 100;
-    atomic<int> abortCount(0);
-    atomic<int> successCount(0);
-
-    // Function to perform conflicting transactions
-    auto performTransactions = [&](int threadId) {
-        for (int i = 0; i < TRANSACTIONS_PER_THREAD; ++i) {
-            // Example transaction: attempt to withdraw an amount that might lead to an abort
-            double amount = (threadId % 3 + 1) * 10; // Vary amount to increase likelihood of conflict
-            bool success = bankingSystem.transfer(accountId, (accountId + 1) % bankingSystem.getNumAccounts(), amount);
-            if (!success) {
-                abortCount++;
-            } else {
-                successCount++;
-            }
+    std::cout << "Thread started...\n";
+    
+    // Main loop
+    while (true) {
+        // Receive data from client
+        int bytesRead = recv(clientSocket, buf, BUFSIZE - 1, 0);
+        buf[bytesRead] = '\0'; // Null-terminate the received data
+        
+        if (bytesRead == 0) {
+            std::cout << "Client disconnected" << std::endl;
+            close(clientSocket);
+            return;
+        } else if (bytesRead == -1) {
+            std::cerr << "Error receiving data from client" << std::endl;
+            close(clientSocket);
+            return;
         }
-    };
 
-    // Start threads to simulate high contention
-    vector<thread> threads;
-    for (int i = 0; i < NUM_THREADS; ++i) {
-        threads.emplace_back(performTransactions, i);
-    }
+        // Parse client input
+        const char delim = ' ';
+        std::string action = std::strtok(buf, &delim);
+        if (action == "balance") {
+            // Get account balance
+            try {
+                std::string account = std::strtok(nullptr, &delim);
+                std::string balance = std::to_string(bankingSystem.getBalance(stoi(account)));
 
-    // Join threads
-    for (auto& t : threads) {
-        t.join();
-    }
-
-    // Verify system state and abort handling
-    cout << "Abort count: " << abortCount << endl;
-    cout << "Success count: " << successCount << endl;
-    double finalBalance = bankingSystem.getBalance(accountId) + bankingSystem.getBalance((accountId + 1) % bankingSystem.getNumAccounts());
-    assert(finalBalance == initialBalance * 2); // Adjust according to your system's logic
-    cout << "Final combined balance is correct." << endl;
-}
-void testSimpleContention(BankingSystem& system) {
-    int accountA = 0; // Assuming account A's ID is 0
-    int accountB = 1; // Assuming account B's ID is 1
-    double transferAmount = system.getBalance(accountA) - 10; // Close to A's balance
-    atomic<int> abortCount(0);
-    atomic<int> successCount(0);
-
-    std::vector<std::thread> threads;
-    for (int i = 0; i < 100; ++i) { // Create 10 threads to simulate contention
-        threads.emplace_back([&]() {
-            bool success = system.transfer(accountA, accountB, transferAmount);
-            if (!success) {
-                abortCount++;
-            } else {
-                successCount++;
+                // Send balance back to client
+                bzero(buf, BUFSIZE);
+                balance.copy(buf, balance.size());
+                send(clientSocket, buf, balance.size(), 0);
+            } catch (...) {
+                // Send error back to client
+                bzero(buf, BUFSIZE);
+                std::string res = "Invalid input";
+                res.copy(buf, res.size());
+                send(clientSocket, buf, res.size(), 0);
             }
-        });
-    }
+        } else if (action == "transfer") {
+            // Transfer money
+            try {
+                int account1 = stoi(std::strtok(nullptr, &delim));
+                int account2 = stoi(std::strtok(nullptr, &delim));
+                double amount = stod(std::strtok(nullptr, &delim));
+                bool transfer = bankingSystem.transfer(account1, account2, amount);
 
-    // Join all threads
-    for (auto& thread : threads) thread.join();
-    cout << "Abort count: " << abortCount << endl;
-    cout << "Success count: " << successCount << endl;
-    // Verify and log the outcome
-}
-void testCascadingAborts(BankingSystem& system) {
-    int accountA = 0;
-    int accountB = 1;
-    int accountC = 2;
-    atomic<int> abortCount(0);
-    atomic<int> successCount(0);
-    // Assuming each account starts with an adequate balance
-    double amountAB = 100; // Transfer amount from A to B
-    double amountBC = 100; // Transfer amount from B to C
-
-    std::thread firstTransfer([&]() {
-        bool success=system.transfer(accountA, accountB, amountAB);
-        if (!success) {
-                abortCount++;
-            } else {
-                successCount++;
-            }
-    });
-
-    std::thread secondTransfer([&]() {
-        // Optionally, add a small delay here to ensure this happens after the first transfer starts
-        bool success=system.transfer(accountB, accountC, amountBC);
-        if (!success) {
-                abortCount++;
-            } else {
-                successCount++;
-            }
-    });
-
-    firstTransfer.join();
-    secondTransfer.join();
-    cout << "Abort count: " << abortCount << endl;
-    cout << "Success count: " << successCount << endl;
-    // Verify and log the outcome
-}
-void testHighVolumeStress(BankingSystem& system) {
-    int numAccounts = system.getNumAccounts();
-    int numThreads = 50; // High number of threads for stress
-    int transactionsPerThread = 100;
-    atomic<int> abortCount(0);
-    atomic<int> successCount(0);
-
-    std::vector<std::thread> threads;
-    for (int i = 0; i < numThreads; ++i) {
-        threads.emplace_back([&]() {
-            for (int j = 0; j < transactionsPerThread; ++j) {
-                int fromAccount = rand() % numAccounts;
-                int toAccount = rand() % numAccounts;
-                while (toAccount == fromAccount) toAccount = rand() % numAccounts; // Ensure different accounts
-                double amount = (rand() % 100) + 1; // Random amount
-                bool success=system.transfer(fromAccount, toAccount, amount);
-                if (!success) {
-                abortCount++;
-            }   else {
-                successCount++;
+                // Check if transfer was successful
+                std::string res;
+                if (transfer) {
+                    res = "Transaction successful";
+                } else {
+                    res = "Transaction failed";
                 }
+
+                // Send balance back to client
+                bzero(buf, BUFSIZE);
+                res.copy(buf, res.size());
+                send(clientSocket, buf, res.size(), 0);
+            } catch (...) {
+                // Send error back to client
+                bzero(buf, BUFSIZE);
+                std::string res = "Invalid input";
+                res.copy(buf, res.size());
+                send(clientSocket, buf, res.size(), 0);
             }
-        });
+        } else {
+            // Send error back to client
+            bzero(buf, BUFSIZE);
+            std::string res = "Invalid input";
+            res.copy(buf, res.size());
+            send(clientSocket, buf, res.size(), 0);
+        }
     }
-
-    // Join all threads
-    for (auto& thread : threads) thread.join();
-    cout << "Abort count: " << abortCount << endl;
-    cout << "Success count: " << successCount << endl;
-    // Verify and log the outcome
+    
+    // Close the client socket
+    close(clientSocket);
 }
-
 
 
 int main(int argc, char *argv[]) {
@@ -307,39 +236,59 @@ int main(int argc, char *argv[]) {
     const double initialBalance = 1000.0;
     BankingSystem bankingSystem(numAccounts, initialBalance);
 
-    int numThreads = 1; // default values
-    int transactionsPerThread = 100;
-
-    if (argc > 1) {
-        for (int i = 1; i < argc; ++i) {
-            if (std::strcmp(argv[i], "-opt") == 0) {
-                if (i + 2 < argc) {
-                    numThreads = std::stoi(argv[i + 1]);
-                    transactionsPerThread = std::stoi(argv[i + 2]);
-                } else {
-                    std::cerr << "Invalid use of -opt. Usage: -opt <numThreads> <transactionsPerThread>" << std::endl;
-                    return 1;
-                }
-                break;
-            }
-            else if (std::strcmp(argv[i], "-h") == 0) {
-                cout<<"Usage:./bank_TL2 -opt <numThreads> <transactionsPerThread>";
-                return 0;
-            }
-        }
+    // Create a socket
+    int serverSocket = socket(AF_INET, SOCK_STREAM, 0);
+    if (serverSocket == -1) {
+        std::cerr << "Error creating socket\n";
+        return 1;
     }
 
-    /*testBankingSystem(bankingSystem, numThreads, transactionsPerThread, std::cout);
-    unsigned long long elapsed_ns;
-	elapsed_ns = (endTime.tv_sec-startTime.tv_sec)*1000000000 + (endTime.tv_nsec-startTime.tv_nsec);
-	printf("Elapsed (ns): %llu\n",elapsed_ns);
-	double elapsed_s = ((double)elapsed_ns)/1000000000.0;
-	printf("Elapsed (s): %lf\n",elapsed_s);
-    cout << "Throughput: " << (numThreads * transactionsPerThread) / elapsed_s << " transactions/second" << endl;*/
+    // Set socket option to allow reuse of the port
+    int enable = 1;
+    if (setsockopt(serverSocket, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable)) == -1) {
+        std::cerr << "Error setting socket option\n";
+        close(serverSocket);
+        return 1;
+    }
 
-    //highContentionTest(bankingSystem, 0, initialBalance);
-    //testSimpleContention(bankingSystem);
-    //testCascadingAborts(bankingSystem);
-    testHighVolumeStress(bankingSystem);
+    // Bind the socket to an IP address and port
+    sockaddr_in serverAddress;
+    serverAddress.sin_family = AF_INET;
+    serverAddress.sin_addr.s_addr = INADDR_ANY; // Accept connections on any interface
+    serverAddress.sin_port = htons(8080); // Listen on port 8080
+    if (bind(serverSocket, (sockaddr*)&serverAddress, sizeof(serverAddress)) == -1) {
+        std::cerr << "Error binding socket\n";
+        close(serverSocket);
+        return 1;
+    }
+
+    // Listen for incoming connections
+    if (listen(serverSocket, 10) == -1) {
+        std::cerr << "Error listening on socket\n";
+        close(serverSocket);
+        return 1;
+    }
+
+    std::cout << "Server is listening on port 8080...\n";
+
+    while (true) {
+        // Accept incoming connections
+        sockaddr_in clientAddress;
+        socklen_t clientAddressSize = sizeof(clientAddress);
+        int clientSocket = accept(serverSocket, (sockaddr*)&clientAddress, &clientAddressSize);
+        if (clientSocket == -1) {
+            std::cerr << "Error accepting connection\n";
+            close(serverSocket);
+            return 1;
+        }
+
+        // Start a new thread to handle the client connection
+        std::thread t(handleClient, clientSocket, bankingSystem);
+        t.detach();
+    }
+
+    // Close the server socket 
+    close(serverSocket);
+
     return 0;
 }

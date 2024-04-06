@@ -76,7 +76,7 @@ public:
     }
 };
 
-void handleClient(int clientSocket, BankingSystem& bankingSystem) {
+void handleClient(int *clientSocket, BankingSystem& bankingSystem) {
     constexpr int BUFSIZE = 1024;
     char buf[BUFSIZE];
 
@@ -85,16 +85,18 @@ void handleClient(int clientSocket, BankingSystem& bankingSystem) {
     // Main loop
     while (true) {
         // Receive data from client
-        int bytesRead = recv(clientSocket, buf, BUFSIZE - 1, 0);
+        int bytesRead = recv(*clientSocket, buf, BUFSIZE - 1, 0);
         buf[bytesRead] = '\0'; // Null-terminate the received data
         
         if (bytesRead == 0) {
             std::cout << "Client disconnected" << std::endl;
-            close(clientSocket);
+            close(*clientSocket);
+            free(clientSocket);
             return;
         } else if (bytesRead == -1) {
             std::cerr << "Error receiving data from client" << std::endl;
-            close(clientSocket);
+            close(*clientSocket);
+            free(clientSocket);
             return;
         }
 
@@ -110,13 +112,13 @@ void handleClient(int clientSocket, BankingSystem& bankingSystem) {
                 // Send balance back to client
                 bzero(buf, BUFSIZE);
                 balance.copy(buf, balance.size());
-                send(clientSocket, buf, balance.size(), 0);
+                send(*clientSocket, buf, balance.size(), 0);
             } catch (...) {
                 // Send error back to client
                 bzero(buf, BUFSIZE);
                 std::string res = "Invalid input";
                 res.copy(buf, res.size());
-                send(clientSocket, buf, res.size(), 0);
+                send(*clientSocket, buf, res.size(), 0);
             }
         } else if (action == "transfer") {
             // Transfer money
@@ -137,25 +139,26 @@ void handleClient(int clientSocket, BankingSystem& bankingSystem) {
                 // Send balance back to client
                 bzero(buf, BUFSIZE);
                 res.copy(buf, res.size());
-                send(clientSocket, buf, res.size(), 0);
+                send(*clientSocket, buf, res.size(), 0);
             } catch (...) {
                 // Send error back to client
                 bzero(buf, BUFSIZE);
                 std::string res = "Invalid input";
                 res.copy(buf, res.size());
-                send(clientSocket, buf, res.size(), 0);
+                send(*clientSocket, buf, res.size(), 0);
             }
         } else {
             // Send error back to client
             bzero(buf, BUFSIZE);
             std::string res = "Invalid input";
             res.copy(buf, res.size());
-            send(clientSocket, buf, res.size(), 0);
+            send(*clientSocket, buf, res.size(), 0);
         }
     }
     
     // Close the client socket
-    close(clientSocket);
+    close(*clientSocket);
+    free(clientSocket);
 }
 
 
@@ -203,12 +206,16 @@ int main(int argc, char *argv[]) {
         // Accept incoming connections
         sockaddr_in clientAddress;
         socklen_t clientAddressSize = sizeof(clientAddress);
-        int clientSocket = accept(serverSocket, (sockaddr*)&clientAddress, &clientAddressSize);
-        if (clientSocket == -1) {
+        int clientConnection = accept(serverSocket, (sockaddr*)&clientAddress, &clientAddressSize);
+        if (clientConnection == -1) {
             std::cerr << "Error accepting connection\n";
             close(serverSocket);
             return 1;
         }
+
+        // Copy socket value to heap variable to be passed into thread
+        int *clientSocket = (int *)malloc(sizeof(int));
+        memcpy(clientSocket, &clientConnection, sizeof(int));
 
         // Start a new thread to handle the client connection
         std::thread t(handleClient, clientSocket, std::ref(bankingSystem));

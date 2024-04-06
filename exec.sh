@@ -11,7 +11,7 @@ run() {
     # Loop to start multiple instances
     for ((i=0; i<$num_invokes; i++)); do
         # Run the a call to 'login'
-        echo -e "${input} ${i}\nexit\n" | ./$program >/dev/null &
+        echo -e "${input} ${i}\nexit\n" | ./$program >/dev/null
     done
 }
 

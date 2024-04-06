@@ -1,6 +1,6 @@
 # Acknowledgements
 
-Credit for RDMA client/server code goes to the original author Animesh Trivedi
+Credit for RDMA client/server code goes to the original author Animesh Trivedi https://github.com/animeshtrivedi/rdma-example
 
 # RDMA exmaple
 

@@ -1,3 +1,7 @@
+# Acknowledgements
+
+Credit for RDMA client/server code goes to the original author Animesh Trivedi https://github.com/animeshtrivedi/rdma-example
+
 # RDMA exmaple
 
 A simple RDMA server client example. The code contains a lot of comments. Here is the workflow that happens in the example: 

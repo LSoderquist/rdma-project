@@ -207,32 +207,34 @@ static int accept_client_connection()
 		rdma_error("Client resources are not properly setup\n");
 		return -EINVAL;
 	}
-	/* we prepare the receive buffer in which we will receive the client metadata*/
-        client_metadata_mr = rdma_buffer_register(pd /* which protection domain */, 
-			&client_metadata_attr /* what memory */,
-			sizeof(client_metadata_attr) /* what length */, 
-		       (IBV_ACCESS_LOCAL_WRITE) /* access permissions */);
-	if(!client_metadata_mr){
-		rdma_error("Failed to register client attr buffer\n");
-		//we assume ENOMEM
-		return -ENOMEM;
-	}
-	/* We pre-post this receive buffer on the QP. SGE credentials is where we 
-	 * receive the metadata from the client */
-	client_recv_sge.addr = (uint64_t) client_metadata_mr->addr; // same as &client_buffer_attr
-	client_recv_sge.length = client_metadata_mr->length;
-	client_recv_sge.lkey = client_metadata_mr->lkey;
-	/* Now we link this SGE to the work request (WR) */
-	bzero(&client_recv_wr, sizeof(client_recv_wr));
-	client_recv_wr.sg_list = &client_recv_sge;
-	client_recv_wr.num_sge = 1; // only one SGE
-	ret = ibv_post_recv(client_qp /* which QP */,
-		      &client_recv_wr /* receive work request*/,
-		      &bad_client_recv_wr /* error WRs */);
-	if (ret) {
-		rdma_error("Failed to pre-post the receive buffer, errno: %d \n", ret);
-		return ret;
-	}
+	/* Allocate a larger buffer to receive the actual string data */
+    size_t buffer_size = 1024; // Adjust size as necessary
+    void* receive_buffer = malloc(buffer_size);
+    if (!receive_buffer) {
+        rdma_error("Failed to allocate receive buffer\n");
+        return -ENOMEM;
+    }
+
+    client_metadata_mr = rdma_buffer_register(pd, receive_buffer, buffer_size, 
+                                              (ibv_access_flags)(IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE));
+    if(!client_metadata_mr) {
+        rdma_error("Failed to register receive buffer\n");
+        free(receive_buffer);
+        return -ENOMEM;
+    }
+
+    client_recv_sge.addr = (uintptr_t)client_metadata_mr->addr;
+    client_recv_sge.length = client_metadata_mr->length;
+    client_recv_sge.lkey = client_metadata_mr->lkey;
+
+    client_recv_wr.sg_list = &client_recv_sge;
+    client_recv_wr.num_sge = 1;
+
+    ret = ibv_post_recv(client_qp, &client_recv_wr, &bad_client_recv_wr);
+    if (ret) {
+        rdma_error("Failed to post receive buffer, errno: %d\n", -errno);
+        return -errno;
+    }
 	debug("Receive buffer pre-posting is successful \n");
 	/* Now we accept the connection. Recall we have not accepted the connection 
 	 * yet because we have to do lots of resource pre-allocation */
@@ -290,7 +292,13 @@ static int send_server_metadata_to_client()
 	}
 	/* if all good, then we should have client's buffer information, lets see */
 	printf("Client side buffer information is received...\n");
-	show_rdma_buffer_attr(&client_metadata_attr);
+	//show_rdma_buffer_attr(&client_metadata_attr);
+	if (wc.status == IBV_WC_SUCCESS && wc.opcode == IBV_WC_RECV) {
+        printf("Received string: %s\n", (char*)client_metadata_mr->addr);
+    } else {
+        rdma_error("Received with error or wrong opcode\n");
+        return -1;
+    }
 	printf("The client has requested buffer length of : %u bytes \n", 
 			client_metadata_attr.length);
 	/* We need to setup requested memory buffer. This is where the client will 

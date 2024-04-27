@@ -11,7 +11,7 @@ num_instances=$1
 run_instance() {
     while true; do
         # Feed the input to the program
-        echo -e "$input" | ./$program >/dev/null &
+        echo -e "$input" | ./$program >/dev/null 2>&1 &
         #sleep 1  # Adjust the sleep duration as needed
     done 
 }

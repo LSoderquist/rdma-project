@@ -5,7 +5,7 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 
-#define SERVER_IP "128.110.216.221"
+#define SERVER_IP "128.110.218.39"
 #define SERVER_PORT 8080
 #define MAXINPUTLEN 32
 

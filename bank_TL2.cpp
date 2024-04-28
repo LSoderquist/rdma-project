@@ -9,6 +9,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <unistd.h>
+#include <bank_common.h>
 
 using namespace std;
 struct timespec startTime, endTime;
@@ -16,40 +17,44 @@ struct timespec startTime, endTime;
 class Account {
 public:
     int id;
-    double balance;
+    //double balance;
     mutable std::mutex accountLock;  // Lock for each account
     std::atomic<int> version{0};  // Version for TL2 
     std::atomic<int> flag{0};
-    Account(int id, double balance) : id(id), balance(balance) {}
+    Account(int id) : id(id) {}
 
-    void deposit(double amount) {
-        //std::lock_guard<std::mutex> lock(accountLock);
-        balance += amount;
-    }
+    // void deposit(double amount) {
+    //     //std::lock_guard<std::mutex> lock(accountLock);
+    //     balance += amount;
+    // }
 
-    void withdraw(double amount) {
-        //std::lock_guard<std::mutex> lock(accountLock);
-        if (balance >= amount) {
-            balance -= amount;
-        } else {
-            cerr << "Insufficient funds in account " << id << endl;
-        }
-    }
+    // void withdraw(double amount) {
+    //     //std::lock_guard<std::mutex> lock(accountLock);
+    //     if (balance >= amount) {
+    //         balance -= amount;
+    //     } else {
+    //         cerr << "Insufficient funds in account " << id << endl;
+    //     }
+    // }
 
     double getBalance() const {
         //std::lock_guard<std::mutex> lock(accountLock);
-        return balance;
+        return stod(balance(id));
     }
 
     int getVersion() const {
         return version.load(std::memory_order_relaxed);
     }
 
-    void updateBalance(double newBalance) {
-        //std::lock_guard<std::mutex> lock(accountLock);
-        balance = newBalance;
+    void incVersion() {
         version++;
     }
+
+    // void updateBalance(double newBalance) {
+    //     //std::lock_guard<std::mutex> lock(accountLock);
+    //     balance = newBalance;
+    //     version++;
+    // }
 
     void lock() {
         int val;
@@ -77,13 +82,9 @@ public:
     }
 
     void performTransaction(double amount) {
-        double fromBalance = from->getBalance();
-        double toBalance = to->getBalance();
-
-        if (fromBalance >= amount) {
-            from->updateBalance(fromBalance - amount);
-            to->updateBalance(toBalance + amount);
-        }
+        transfer(from->id, to->id, amount);
+        from->incVersion();
+        to->incVersion();
     }
 
     void endTransaction() {
@@ -121,7 +122,7 @@ private:
 public:
     BankingSystem(int numAccounts, double initialBalance) {
         for (int i = 0; i < numAccounts; ++i) {
-            Account *acc_obj = new Account(i, initialBalance);
+            Account *acc_obj = new Account(i);
             accounts.push_back(acc_obj);
         }
     }
@@ -237,6 +238,8 @@ void handleClient(int *clientSocket, BankingSystem bankingSystem) {
 
 int main(int argc, char *argv[]) {
     const int numAccounts = stoi(argv[1]);
+    initdb(numAccounts);
+    
     const double initialBalance = 1000.0;
     BankingSystem bankingSystem(numAccounts, initialBalance);
 

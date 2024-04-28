@@ -17,6 +17,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <unistd.h>
+#include <bank_common.h>
 
 struct timespec startTime, endTime;
 using namespace std;
@@ -24,23 +25,23 @@ using namespace std;
 class Account {
 public:
     int id;
-    double balance;
+    //double balance;
     mutable std::mutex accountLock;
 
-    Account(int id, double balance) : id(id), balance(balance) {}
+    Account(int id, double balance) : id(id) {}
 
-    void deposit(double amount) {
-        balance += amount;
-    }
+    // void deposit(double amount) {
+    //     balance += amount;
+    // }
 
-    void withdraw(double amount) {
-        if (balance >= amount) {
-            balance -= amount;
-        }
-    }
+    // void withdraw(double amount) {
+    //     if (balance >= amount) {
+    //         balance -= amount;
+    //     }
+    // }
 
     double getBalance() const {
-        return balance;
+        return stod(balance(id));
     }
 };
 
@@ -61,7 +62,7 @@ public:
         }
     }
 
-    bool transfer(int from, int to, double amount) {
+    bool doTransfer(int from, int to, double amount) {
         // Sort the account IDs to avoid deadlock
         int lowerId = min(from, to);
         int higherId = max(from, to);
@@ -73,8 +74,7 @@ public:
         }
 
         // Perform the transfer
-        accounts[from]->withdraw(amount);
-        accounts[to]->deposit(amount);
+        transfer(from, to, amount);
 
         // Shrinking Phase: Release all locks
         accounts[lowerId]->accountLock.unlock();
@@ -146,7 +146,7 @@ void handleClient(int *clientSocket, BankingSystem& bankingSystem) {
                 int account1 = stoi(std::strtok(nullptr, &delim));
                 int account2 = stoi(std::strtok(nullptr, &delim));
                 double amount = stod(std::strtok(nullptr, &delim));
-                bool transfer = bankingSystem.transfer(account1, account2, amount);
+                bool transfer = bankingSystem.doTransfer(account1, account2, amount);
 
                 // Check if transfer was successful
                 std::string res;
@@ -183,7 +183,9 @@ void handleClient(int *clientSocket, BankingSystem& bankingSystem) {
 
 
 int main(int argc, char *argv[]) {
-    const int numAccounts = stoi(argv[1]) ;
+    const int numAccounts = stoi(argv[1]);
+    initdb(numAccounts);
+
     const double initialBalance = 1000.0;
     BankingSystem bankingSystem(numAccounts, initialBalance);
 

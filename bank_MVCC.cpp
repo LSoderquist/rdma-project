@@ -3,80 +3,16 @@
 #include <mutex>
 #include <thread>
 #include <chrono>
+#include <atomic>
+#include <cassert>
 #include <cstring>
+#include <string>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <unistd.h>
 #include <bank_common.h>
 
-using namespace std;
-struct timespec startTime, endTime;
-class Account {
-public:
-    int id;
-    // double balance;
-
-    Account(int id, double balance) : id(id) {}
-
-    // void deposit(double amount) {
-    //     balance += amount;
-    // }
-
-    // void withdraw(double amount) {
-    //     if (balance >= amount) {
-    //         balance -= amount;
-    //     } else {
-    //         //cerr << "Insufficient funds in account " << id << endl;
-    //     }
-    // }
-
-    double getBalance() const {
-        return stod(balance(id));
-    }
-};
-
-class BankingSystem {
-private:
-    vector<Account> accounts;
-    mutex globalLock;
-
-public:
-    BankingSystem(int numAccounts, double initialBalance) {
-        accounts.reserve(numAccounts);
-        for (int i = 0; i < numAccounts; ++i) {
-            accounts.emplace_back(i, initialBalance);
-        }
-    }
-
-    bool doTransfer(int from, int to, double amount) {
-        lock_guard<mutex> lock(globalLock);
-
-        if (from < 0 || from >= accounts.size() || to < 0 || to >= accounts.size()) {
-            cerr << "Invalid account IDs" << endl;
-            return false;
-        }
-
-        transfer(from, to, amount);
-        return true;
-    }
-
-    double getBalance(int accountID) const {
-        if (accountID < 0 || accountID >= accounts.size()) {
-            cerr << "Invalid account ID" << endl;
-            return -1.0;
-        }
-
-        return accounts[accountID].getBalance();
-    }
-    const vector<Account>& getAccounts() const {
-        return accounts;
-    }
-    int getNumAccounts() const {
-        return accounts.size();
-    }
-};
-
-void handleClient(int *clientSocket, BankingSystem& bankingSystem) {
+void handleClient(int *clientSocket) {
     constexpr int BUFSIZE = 1024;
     char buf[BUFSIZE];
 
@@ -86,6 +22,7 @@ void handleClient(int *clientSocket, BankingSystem& bankingSystem) {
     while (true) {
         // Receive data from client
         int bytesRead = recv(*clientSocket, buf, BUFSIZE - 1, 0);
+        std::cout << "data received from client" << std::endl;
         buf[bytesRead] = '\0'; // Null-terminate the received data
         
         if (bytesRead == 0) {
@@ -107,12 +44,12 @@ void handleClient(int *clientSocket, BankingSystem& bankingSystem) {
             // Get account balance
             try {
                 std::string account = std::strtok(nullptr, &delim);
-                std::string balance = std::to_string(bankingSystem.getBalance(stoi(account)));
+                std::string balanceval = balance(std::stoi(account));
 
                 // Send balance back to client
                 bzero(buf, BUFSIZE);
-                balance.copy(buf, balance.size());
-                send(*clientSocket, buf, balance.size(), 0);
+                balanceval.copy(buf, balanceval.size());
+                send(*clientSocket, buf, balanceval.size(), 0);
             } catch (...) {
                 // Send error back to client
                 bzero(buf, BUFSIZE);
@@ -123,10 +60,10 @@ void handleClient(int *clientSocket, BankingSystem& bankingSystem) {
         } else if (action == "transfer") {
             // Transfer money
             try {
-                int account1 = stoi(std::strtok(nullptr, &delim));
-                int account2 = stoi(std::strtok(nullptr, &delim));
-                double amount = stod(std::strtok(nullptr, &delim));
-                bool transfer = bankingSystem.doTransfer(account1, account2, amount);
+                int account1 = std::stoi(std::strtok(nullptr, &delim));
+                int account2 = std::stoi(std::strtok(nullptr, &delim));
+                double amount = std::stod(std::strtok(nullptr, &delim));
+                std::string transferval = transfer(account1, account2, amount);
 
                 // Check if transfer was successful
                 std::string res;
@@ -161,13 +98,9 @@ void handleClient(int *clientSocket, BankingSystem& bankingSystem) {
     free(clientSocket);
 }
 
-
 int main(int argc, char *argv[]) {
-    const int numAccounts = stoi(argv[1]);
+    const int numAccounts = std::stoi(argv[1]);
     initdb(numAccounts);
-
-    const double initialBalance = 1000.0;
-    BankingSystem bankingSystem(numAccounts, initialBalance);
 
     // Create a socket
     int serverSocket = socket(AF_INET, SOCK_STREAM, 0);
@@ -220,7 +153,7 @@ int main(int argc, char *argv[]) {
         memcpy(clientSocket, &clientConnection, sizeof(int));
 
         // Start a new thread to handle the client connection
-        std::thread t(handleClient, clientSocket, std::ref(bankingSystem));
+        std::thread t(handleClient, clientSocket);
         t.detach();
     }
 

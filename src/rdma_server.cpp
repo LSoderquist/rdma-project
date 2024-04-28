@@ -24,7 +24,7 @@ static struct rdma_buffer_attr client_metadata_attr, server_metadata_attr;
 static struct ibv_recv_wr client_recv_wr, *bad_client_recv_wr = NULL;
 static struct ibv_send_wr server_send_wr, *bad_server_send_wr = NULL;
 static struct ibv_sge client_recv_sge, server_send_sge;
-
+static char *src = NULL,*dst =NULL;
 /* When we call this function cm_client_id must be set to a valid identifier.
  * This is where, we prepare client connection before we accept it. This 
  * mainly involve pre-posting a receive buffer to receive client side 
@@ -299,12 +299,10 @@ static int send_server_metadata_to_client()
         rdma_error("Received with error or wrong opcode\n");
         return -1;
     }
-	printf("The client has requested buffer length of : %u bytes \n", 
-			client_metadata_attr.length);
 	/* We need to setup requested memory buffer. This is where the client will 
 	* do RDMA READs and WRITEs. */
        server_buffer_mr = rdma_buffer_alloc(pd /* which protection domain */, 
-		       client_metadata_attr.length /* what size to allocate */, 
+		       1024 /* what size to allocate */, 
 		       (ibv_access_flags)(IBV_ACCESS_LOCAL_WRITE|
 		       IBV_ACCESS_REMOTE_READ|
 		       IBV_ACCESS_REMOTE_WRITE) /* access permissions */);
@@ -360,8 +358,65 @@ static int send_server_metadata_to_client()
 	       rdma_error("Failed to send server metadata, ret = %d \n", ret);
 	       return ret;
        }
-       debug("Local buffer metadata has been sent to the client \n");
        return 0;
+}
+/* This function sends the string from the server to the client */
+static int send_string_to_client()
+{
+    int ret = -1;
+    struct ibv_wc wc;
+
+    // Register the source buffer for RDMA transfer
+    struct ibv_mr *server_src_mr = rdma_buffer_register(pd, src, strlen(src) + 1,
+                                                        (ibv_access_flags)(IBV_ACCESS_LOCAL_WRITE | 
+			 IBV_ACCESS_REMOTE_WRITE | 
+			 IBV_ACCESS_REMOTE_READ));
+    if (!server_src_mr) {
+        rdma_error("Failed to register source buffer\n");
+        return -ENOMEM;
+    }
+
+    // Prepare the SGE and send work request for the string transfer
+    struct ibv_sge server_string_sge;
+    server_string_sge.addr = (uintptr_t)server_src_mr->addr;
+    server_string_sge.length = server_src_mr->length;
+    server_string_sge.lkey = server_src_mr->lkey;
+
+    struct ibv_send_wr server_string_wr;
+    bzero(&server_string_wr, sizeof(server_string_wr));
+    server_string_wr.sg_list = &server_string_sge;
+    server_string_wr.num_sge = 1;
+    server_string_wr.opcode = IBV_WR_SEND;
+    server_string_wr.send_flags = IBV_SEND_SIGNALED;
+
+    struct ibv_send_wr *bad_server_string_wr = NULL;
+    ret = ibv_post_send(client_qp, &server_string_wr, &bad_server_string_wr);
+    if (ret) {
+        rdma_error("Failed to send string to client, errno: %d\n", -errno);
+        rdma_buffer_deregister(server_src_mr);
+        return -errno;
+    }
+
+    // Wait for the completion event
+    ret = process_work_completion_events(io_completion_channel, &wc, 1);
+    if (ret != 1) {
+        rdma_error("Failed to send string to client, ret = %d\n", ret);
+        rdma_buffer_deregister(server_src_mr);
+        return ret;
+    }
+
+    if (wc.status == IBV_WC_SUCCESS && wc.opcode == IBV_WC_SEND) {
+        printf("String sent to client: %s\n", src);
+    } else {
+        rdma_error("Sending string to client failed with status: %d\n", wc.status);
+        rdma_buffer_deregister(server_src_mr);
+        return -1;
+    }
+
+    // Deregister the source buffer
+    rdma_buffer_deregister(server_src_mr);
+
+    return 0;
 }
 
 /* This is server side logic. Server passively waits for the client to call 
@@ -445,8 +500,26 @@ int main(int argc, char **argv)
 	server_sockaddr.sin_family = AF_INET; /* standard IP NET address */
 	server_sockaddr.sin_addr.s_addr = htonl(INADDR_ANY); /* passed address */
 	/* Parse Command Line Arguments, not the most reliable code */
-	while ((option = getopt(argc, argv, "a:p:")) != -1) {
+	while ((option = getopt(argc, argv, "s:a:p")) != -1) {
 		switch (option) {
+			case 's':
+				printf("Passed string is : %s , with count %u \n", 
+						optarg, 
+						(unsigned int) strlen(optarg));
+				src = (char*)calloc(strlen(optarg) , 1);
+				if (!src) {
+					rdma_error("Failed to allocate memory : -ENOMEM\n");
+					return -ENOMEM;
+				}
+				/* Copy the passes arguments */
+				strncpy(src, optarg, strlen(optarg));
+				dst = (char*)calloc(strlen(optarg), 1);
+				if (!dst) {
+					rdma_error("Failed to allocate destination memory, -ENOMEM\n");
+					free(src);
+					return -ENOMEM;
+				}
+				break;	
 			case 'a':
 				/* Remember, this will overwrite the port info */
 				ret = get_addr(optarg, (struct sockaddr*) &server_sockaddr);
@@ -459,6 +532,7 @@ int main(int argc, char **argv)
 				/* passed port to listen on */
 				server_sockaddr.sin_port = htons(strtol(optarg, NULL, 0)); 
 				break;
+			
 			default:
 				usage();
 				break;
@@ -488,6 +562,11 @@ int main(int argc, char **argv)
 		rdma_error("Failed to send server metadata to the client, ret = %d \n", ret);
 		return ret;
 	}
+	ret = send_string_to_client();
+    if (ret) {
+        rdma_error("Failed to send string to the client, ret = %d\n", ret);
+        return ret;
+    }
 	ret = disconnect_and_cleanup();
 	if (ret) { 
 		rdma_error("Failed to clean up resources properly, ret = %d \n", ret);

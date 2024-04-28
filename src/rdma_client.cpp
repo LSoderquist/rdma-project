@@ -283,7 +283,73 @@ static int client_xchange_metadata_with_server()
 	show_rdma_buffer_attr(&server_metadata_attr);
 	return 0;
 }
+/* This function receives the string from the server */
+static int receive_string_from_server()
+{
+    int ret = -1;
+    struct ibv_wc wc;
 
+    // Prepare the receive buffer with a reasonable maximum size
+    const size_t max_buffer_size = 1024; // Adjust as needed
+    char *recv_buf = (char *)malloc(max_buffer_size);
+    if (!recv_buf) {
+        rdma_error("Failed to allocate receive buffer\n");
+        return -ENOMEM;
+    }
+
+    // Register the receive buffer for RDMA access
+    struct ibv_mr *client_recv_mr = rdma_buffer_register(pd, recv_buf, max_buffer_size,
+                                                         IBV_ACCESS_LOCAL_WRITE);
+    if (!client_recv_mr) {
+        rdma_error("Failed to register receive buffer\n");
+        free(recv_buf);
+        return -ENOMEM;
+    }
+
+    // Prepare the receive work request
+    struct ibv_sge client_recv_sge;
+    client_recv_sge.addr = (uintptr_t)client_recv_mr->addr;
+    client_recv_sge.length = client_recv_mr->length;
+    client_recv_sge.lkey = client_recv_mr->lkey;
+
+    struct ibv_recv_wr client_recv_wr;
+    bzero(&client_recv_wr, sizeof(client_recv_wr));
+    client_recv_wr.sg_list = &client_recv_sge;
+    client_recv_wr.num_sge = 1;
+
+    struct ibv_recv_wr *bad_client_recv_wr = NULL;
+    ret = ibv_post_recv(client_qp, &client_recv_wr, &bad_client_recv_wr);
+    if (ret) {
+        rdma_error("Failed to post receive buffer, errno: %d\n", -errno);
+        rdma_buffer_deregister(client_recv_mr);
+        free(recv_buf);
+        return -errno;
+    }
+
+    // Wait for the completion event
+    ret = process_work_completion_events(io_completion_channel, &wc, 1);
+    if (ret != 1) {
+        rdma_error("Failed to receive string from server, ret = %d\n", ret);
+        rdma_buffer_deregister(client_recv_mr);
+        free(recv_buf);
+        return ret;
+    }
+
+    if (wc.status == IBV_WC_SUCCESS && wc.opcode == IBV_WC_RECV) {
+        printf("Received string from server: %.*s\n", (int)wc.byte_len, recv_buf);
+    } else {
+        rdma_error("Receiving string from server failed with status: %d\n", wc.status);
+        rdma_buffer_deregister(client_recv_mr);
+        free(recv_buf);
+        return -1;
+    }
+
+    // Deregister and free the receive buffer
+    rdma_buffer_deregister(client_recv_mr);
+    free(recv_buf);
+
+    return 0;
+}
 /* This function does :
  * 1) Prepare memory buffers for RDMA operations 
  * 1) RDMA write from src -> remote buffer 
@@ -517,6 +583,11 @@ int main(int argc, char **argv) {
 		rdma_error("Failed to setup client connection , ret = %d \n", ret);
 		return ret;
 	}
+	ret = receive_string_from_server();
+    if (ret) {
+        rdma_error("Failed to receive string from server, ret = %d\n", ret);
+        return ret;
+    }
 	ret = client_remote_memory_ops();
 	if (ret) {
 		rdma_error("Failed to finish remote memory ops, ret = %d \n", ret);

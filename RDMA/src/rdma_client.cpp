@@ -25,10 +25,9 @@ static struct ibv_send_wr client_send_wr, *bad_client_send_wr = NULL;
 static struct ibv_recv_wr server_recv_wr, *bad_server_recv_wr = NULL;
 static struct ibv_sge client_send_sge, server_recv_sge;
 /* Source and Destination buffers, where RDMA operations source and sink */
-static char *src = NULL, *dst = NULL; 
 
 /* This is our testing function */
-static int check_src_dst() 
+static int check_src_dst(char *src, char *dst) 
 {
 	return memcmp((void*) src, (void*) dst, strlen(src));
 }
@@ -100,9 +99,9 @@ static int client_prepare_connection(struct sockaddr_in *s_addr)
 		rdma_error("Failed to acknowledge the CM event, errno: %d \n", -errno);
 		return -errno;
 	}
-	printf("Trying to connect to server at : %s port: %d \n", 
-			inet_ntoa(s_addr->sin_addr),
-			ntohs(s_addr->sin_port));
+	// printf("Trying to connect to server at : %s port: %d \n", 
+	// 		inet_ntoa(s_addr->sin_addr),
+	// 		ntohs(s_addr->sin_port));
 	/* Protection Domain (PD) is similar to a "process abstraction" 
 	 * in the operating system. All resources are tied to a particular PD. 
 	 * And accessing recourses across PD will result in a protection fault.
@@ -231,7 +230,7 @@ static int client_connect_to_server()
 			       -errno);
 		return -errno;
 	}
-	printf("The client is connected successfully \n");
+	// ("The client is connected successfully \n");
 	return 0;
 }
 
@@ -240,7 +239,7 @@ static int client_connect_to_server()
  * this program is client driven. But it shown here how to do it for the illustration
  * purposes
  */
-static int client_xchange_metadata_with_server()
+static int client_xchange_metadata_with_server(char *src)
 {
 	struct ibv_wc wc[2];
 	int ret = -1;
@@ -280,11 +279,11 @@ static int client_xchange_metadata_with_server()
 		return ret;
 	}
 	debug("Server sent us its buffer location and credentials, showing \n");
-	show_rdma_buffer_attr(&server_metadata_attr);
+	// show_rdma_buffer_attr(&server_metadata_attr);
 	return 0;
 }
 /* This function receives the string from the server */
-static int receive_string_from_server()
+static int receive_string_from_server(char *str)
 {
     int ret = -1;
     struct ibv_wc wc;
@@ -336,7 +335,7 @@ static int receive_string_from_server()
     }
 
     if (wc.status == IBV_WC_SUCCESS && wc.opcode == IBV_WC_RECV) {
-        printf("Received string from server: %.*s\n", (int)wc.byte_len, recv_buf);
+        // printf("Received string from server: %.*s\n", (int)wc.byte_len, recv_buf);
     } else {
         rdma_error("Receiving string from server failed with status: %d\n", wc.status);
         rdma_buffer_deregister(client_recv_mr);
@@ -344,9 +343,11 @@ static int receive_string_from_server()
         return -1;
     }
 
+	strncpy(str, recv_buf, strnlen(recv_buf, BUFSIZ));
+
     // Deregister and free the receive buffer
     rdma_buffer_deregister(client_recv_mr);
-    free(recv_buf);
+	free(recv_buf);
 
     return 0;
 }
@@ -355,7 +356,7 @@ static int receive_string_from_server()
  * 1) RDMA write from src -> remote buffer 
  * 2) RDMA read from remote bufer -> dst
  */ 
-static int client_remote_memory_ops() 
+static int client_remote_memory_ops(char *src, char *dst) 
 {
 	struct ibv_wc wc;
 	int ret = -1;
@@ -439,7 +440,7 @@ static int client_remote_memory_ops()
 /* This function disconnects the RDMA connection from the server and cleans up 
  * all the resources.
  */
-static int client_disconnect_and_clean()
+static int client_disconnect_and_clean(char *src, char *dst)
 {
 	struct rdma_cm_event *cm_event = NULL;
 	int ret = -1;
@@ -498,7 +499,7 @@ static int client_disconnect_and_clean()
 		// we continue anyways;
 	}
 	rdma_destroy_event_channel(cm_event_channel);
-	printf("Client resource clean up is complete \n");
+	// printf("Client resource clean up is complete \n");
 	return 0;
 }
 
@@ -509,99 +510,108 @@ void usage() {
 	exit(1);
 }
 
-int main(int argc, char **argv) {
-	struct sockaddr_in server_sockaddr;
-	int ret, option;
-	bzero(&server_sockaddr, sizeof server_sockaddr);
-	server_sockaddr.sin_family = AF_INET;
-	server_sockaddr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-	/* buffers are NULL */
-	src = dst = NULL; 
-	/* Parse Command Line Arguments */
-	while ((option = getopt(argc, argv, "s:a:p:")) != -1) {
-		switch (option) {
-			case 's':
-				printf("Passed string is : %s , with count %u \n", 
-						optarg, 
-						(unsigned int) strlen(optarg));
-				src = (char*)calloc(strlen(optarg) , 1);
-				if (!src) {
-					rdma_error("Failed to allocate memory : -ENOMEM\n");
-					return -ENOMEM;
-				}
-				/* Copy the passes arguments */
-				strncpy(src, optarg, strlen(optarg));
-				dst = (char*)calloc(strlen(optarg), 1);
-				if (!dst) {
-					rdma_error("Failed to allocate destination memory, -ENOMEM\n");
-					free(src);
-					return -ENOMEM;
-				}
-				break;
-			case 'a':
-				/* remember, this overwrites the port info */
-				ret = get_addr(optarg, (struct sockaddr*) &server_sockaddr);
-				if (ret) {
-					rdma_error("Invalid IP \n");
-					return ret;
-				}
-				break;
-			case 'p':
-				/* passed port to listen on */
-				server_sockaddr.sin_port = htons(strtol(optarg, NULL, 0)); 
-				break;
-			default:
-				usage();
-				break;
-			}
-		}
-	if (!server_sockaddr.sin_port) {
-	  /* no port provided, use the default port */
-	  server_sockaddr.sin_port = htons(DEFAULT_RDMA_PORT);
-	  }
-	if (src == NULL) {
-		printf("Please provide a string to copy \n");
-		usage();
-       	}
-	ret = client_prepare_connection(&server_sockaddr);
-	if (ret) { 
-		rdma_error("Failed to setup client connection , ret = %d \n", ret);
-		return ret;
-	 }
-	ret = client_pre_post_recv_buffer(); 
-	if (ret) { 
-		rdma_error("Failed to setup client connection , ret = %d \n", ret);
-		return ret;
-	}
-	ret = client_connect_to_server();
-	if (ret) { 
-		rdma_error("Failed to setup client connection , ret = %d \n", ret);
-		return ret;
-	}
-	ret = client_xchange_metadata_with_server();
-	if (ret) {
-		rdma_error("Failed to setup client connection , ret = %d \n", ret);
-		return ret;
-	}
-	ret = receive_string_from_server();
-    if (ret) {
-        rdma_error("Failed to receive string from server, ret = %d\n", ret);
-        return ret;
-    }
-	ret = client_remote_memory_ops();
-	if (ret) {
-		rdma_error("Failed to finish remote memory ops, ret = %d \n", ret);
-		return ret;
-	}
-	if (check_src_dst()) {
-		rdma_error("src and dst buffers do not match \n");
-	} else {
-		printf("...\nSUCCESS, source and destination buffers match \n");
-	}
-	ret = client_disconnect_and_clean();
-	if (ret) {
-		rdma_error("Failed to cleanly disconnect and clean up resources \n");
-	}
-	return ret;
-}
+// int main(int argc, char **argv) {
+// 	struct sockaddr_in server_sockaddr;
+// 	int ret, option;
+// 	bzero(&server_sockaddr, sizeof server_sockaddr);
+// 	server_sockaddr.sin_family = AF_INET;
+// 	server_sockaddr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+// 	/* buffers are NULL */
+// 	char *src = NULL;
+// 	char *dst = NULL; 
+// 	/* Parse Command Line Arguments */
+// 	while ((option = getopt(argc, argv, "s:a:p:")) != -1) {
+// 		switch (option) {
+// 			case 's':
+// 				printf("Passed string is : %s , with count %u \n", 
+// 						optarg, 
+// 						(unsigned int) strlen(optarg));
+// 				src = (char*)calloc(strlen(optarg) , 1);
+// 				if (!src) {
+// 					rdma_error("Failed to allocate memory : -ENOMEM\n");
+// 					return -ENOMEM;
+// 				}
+// 				/* Copy the passes arguments */
+// 				strncpy(src, optarg, strlen(optarg));
+// 				dst = (char*)calloc(strlen(optarg), 1);
+// 				if (!dst) {
+// 					rdma_error("Failed to allocate destination memory, -ENOMEM\n");
+// 					free(src);
+// 					return -ENOMEM;
+// 				}
+// 				break;
+// 			case 'a':
+// 				/* remember, this overwrites the port info */
+// 				ret = get_addr(optarg, (struct sockaddr*) &server_sockaddr);
+// 				if (ret) {
+// 					rdma_error("Invalid IP \n");
+// 					return ret;
+// 				}
+// 				break;
+// 			case 'p':
+// 				/* passed port to listen on */
+// 				server_sockaddr.sin_port = htons(strtol(optarg, NULL, 0)); 
+// 				break;
+// 			default:
+// 				usage();
+// 				break;
+// 			}
+// 		}
+// 	if (!server_sockaddr.sin_port) {
+// 	  /* no port provided, use the default port */
+// 	  server_sockaddr.sin_port = htons(DEFAULT_RDMA_PORT);
+// 	  }
+// 	if (src == NULL) {
+// 		printf("Please provide a string to copy \n");
+// 		usage();
+//        	}
+// 	ret = client_prepare_connection(&server_sockaddr);
+// 	printf("client_prepare_connection\n");
+// 	if (ret) { 
+// 		rdma_error("Failed to setup client connection , ret = %d \n", ret);
+// 		return ret;
+// 	 }
+// 	ret = client_pre_post_recv_buffer(); 
+// 	printf("client_pre_post_recv_buffer\n");
+// 	if (ret) { 
+// 		rdma_error("Failed to setup client connection , ret = %d \n", ret);
+// 		return ret;
+// 	}
+// 	ret = client_connect_to_server();
+// 	printf("client_connect_to_server\n");
+// 	if (ret) { 
+// 		rdma_error("Failed to setup client connection , ret = %d \n", ret);
+// 		return ret;
+// 	}
+// 	ret = client_xchange_metadata_with_server(src);
+// 	printf("client_xchange_metadata_with_server\n");
+// 	if (ret) {
+// 		rdma_error("Failed to setup client connection , ret = %d \n", ret);
+// 		return ret;
+// 	}
+// 	char str[BUFSIZ];
+// 	ret = receive_string_from_server(str);
+// 	printf("receive_string_from_server: %s\n", str);
+//     if (ret) {
+//         rdma_error("Failed to receive string from server, ret = %d\n", ret);
+//         return ret;
+//     }
+// 	ret = client_remote_memory_ops(src, dst);
+// 	printf("client_remote_memory_ops\n");
+// 	if (ret) {
+// 		rdma_error("Failed to finish remote memory ops, ret = %d \n", ret);
+// 		return ret;
+// 	}
+// 	if (check_src_dst(src, dst)) {
+// 		rdma_error("src and dst buffers do not match \n");
+// 	} else {
+// 		printf("...\nSUCCESS, source and destination buffers match \n");
+// 	}
+// 	ret = client_disconnect_and_clean(src, dst);
+// 	printf("client_disconnect_and_clean\n");
+// 	if (ret) {
+// 		rdma_error("Failed to cleanly disconnect and clean up resources \n");
+// 	}
+// 	return ret;
+// }
 
